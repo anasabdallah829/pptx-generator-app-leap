@@ -11,6 +11,8 @@ import { Separator } from '@/components/ui/separator';
 import { TemplateManager } from './TemplateManager';
 import backend from '~backend/client';
 
+const MAX_TEMPLATE_SIZE = 50 * 1024 * 1024; // 50MB
+
 export function TemplateUpload() {
   const { t } = useLanguage();
   const { template, setTemplate } = useSession();
@@ -21,25 +23,12 @@ export function TemplateUpload() {
     mutationFn: async (file: File) => {
       setUploadProgress(10);
       
-      const fileData = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          const result = reader.result as string;
-          resolve(result.split(',')[1]); // Remove data:... prefix
-        };
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
-      });
-
-      setUploadProgress(50);
-
-      const response = await backend.pptx.uploadTemplate({
-        filename: file.name,
-        fileData,
-      });
-
-      setUploadProgress(100);
-      return response;
+      // Choose upload method based on file size
+      if (file.size <= MAX_TEMPLATE_SIZE) {
+        return await uploadBase64Template(file);
+      } else {
+        return await uploadRawTemplate(file);
+      }
     },
     onSuccess: (data) => {
       if (data.success && data.templateId && data.hash) {
@@ -73,6 +62,56 @@ export function TemplateUpload() {
     },
   });
 
+  const uploadBase64Template = async (file: File) => {
+    setUploadProgress(20);
+    
+    const fileData = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as string;
+        resolve(result.split(',')[1]); // Remove data:... prefix
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+
+    setUploadProgress(50);
+
+    const response = await backend.pptx.uploadTemplate({
+      filename: file.name,
+      fileData,
+    });
+
+    setUploadProgress(100);
+    return response;
+  };
+
+  const uploadRawTemplate = async (file: File) => {
+    setUploadProgress(20);
+
+    // Create FormData for raw upload
+    const formData = new FormData();
+    formData.append('file', file);
+
+    setUploadProgress(40);
+
+    // Upload using fetch to raw endpoint
+    const response = await fetch('/pptx/upload-template-raw', {
+      method: 'POST',
+      body: formData,
+    });
+
+    setUploadProgress(80);
+
+    if (!response.ok) {
+      throw new Error(`Upload failed: ${response.statusText}`);
+    }
+
+    const result = await response.json();
+    setUploadProgress(100);
+    return result;
+  };
+
   const onDrop = useCallback((acceptedFiles: File[]) => {
     const file = acceptedFiles[0];
     if (file) {
@@ -84,6 +123,16 @@ export function TemplateUpload() {
         });
         return;
       }
+
+      if (file.size > 100 * 1024 * 1024) { // 100MB limit
+        toast({
+          title: 'File Too Large',
+          description: 'Please upload a template smaller than 100MB',
+          variant: 'destructive',
+        });
+        return;
+      }
+
       uploadMutation.mutate(file);
     }
   }, [uploadMutation, toast]);
@@ -156,12 +205,23 @@ export function TemplateUpload() {
                   <p className="text-gray-500">
                     Drag and drop a .pptx file here, or click to select
                   </p>
+                  <p className="text-xs text-gray-400 mt-1">
+                    Maximum file size: 100MB
+                  </p>
                 </div>
               </>
             )}
           </div>
         </div>
       )}
+
+      <div className="text-xs text-gray-500 bg-gray-50 p-3 rounded">
+        <p className="font-medium mb-1">Upload Methods:</p>
+        <ul className="space-y-1">
+          <li>• Files ≤ 50MB: Base64 encoding upload</li>
+          <li>• Files &gt; 50MB: Raw file transfer</li>
+        </ul>
+      </div>
 
       {uploadMutation.isError && (
         <div className="flex items-center space-x-3 p-4 bg-red-50 border border-red-200 rounded-lg">

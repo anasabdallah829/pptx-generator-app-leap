@@ -9,8 +9,9 @@ import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import backend from '~backend/client';
 
-const CHUNK_SIZE = 4 * 1024 * 1024; // 4MB chunks (smaller for better reliability)
-const MAX_SINGLE_UPLOAD_SIZE = 5 * 1024 * 1024; // 5MB
+const CHUNK_SIZE = 4 * 1024 * 1024; // 4MB chunks
+const MAX_SINGLE_UPLOAD_SIZE = 30 * 1024 * 1024; // 30MB for single upload
+const MAX_RAW_UPLOAD_SIZE = 100 * 1024 * 1024; // 100MB for raw upload
 
 export function ArchiveUpload() {
   const { t } = useLanguage();
@@ -26,9 +27,11 @@ export function ArchiveUpload() {
         setUploadProgress(5);
         setUploadStatus('Preparing upload...');
 
-        // Check file size to determine upload method
+        // Determine upload method based on file size
         if (file.size <= MAX_SINGLE_UPLOAD_SIZE) {
           return await uploadSingleFile(file);
+        } else if (file.size <= MAX_RAW_UPLOAD_SIZE) {
+          return await uploadRawFile(file);
         } else {
           return await uploadChunkedFile(file);
         }
@@ -112,6 +115,34 @@ export function ArchiveUpload() {
     return response;
   };
 
+  const uploadRawFile = async (file: File) => {
+    setUploadStatus('Uploading file...');
+    setUploadProgress(10);
+
+    // Create FormData for raw upload
+    const formData = new FormData();
+    formData.append('sessionId', sessionId);
+    formData.append('file', file);
+
+    setUploadProgress(30);
+
+    // Upload using fetch to raw endpoint
+    const response = await fetch('/pptx/upload-archive-raw', {
+      method: 'POST',
+      body: formData,
+    });
+
+    setUploadProgress(80);
+
+    if (!response.ok) {
+      throw new Error(`Upload failed: ${response.statusText}`);
+    }
+
+    const result = await response.json();
+    setUploadProgress(100);
+    return result;
+  };
+
   const uploadChunkedFile = async (file: File) => {
     // Create abort controller for this upload
     abortControllerRef.current = new AbortController();
@@ -138,7 +169,7 @@ export function ArchiveUpload() {
     setUploadStatus(`Uploading chunks (0/${totalChunks})...`);
     setUploadProgress(10);
 
-    // Upload chunks
+    // Upload chunks using raw endpoint
     for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
       if (abortControllerRef.current?.signal.aborted) {
         throw new Error('Upload cancelled');
@@ -148,29 +179,28 @@ export function ArchiveUpload() {
       const end = Math.min(start + CHUNK_SIZE, file.size);
       const chunk = file.slice(start, end);
 
-      // Convert chunk to base64
-      const chunkData = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          const result = reader.result as string;
-          const base64Data = result.split(',')[1]; // Remove data:... prefix
-          resolve(base64Data);
-        };
-        reader.onerror = () => reject(new Error('Failed to read chunk'));
-        reader.readAsDataURL(chunk);
+      // Create FormData for chunk upload
+      const formData = new FormData();
+      formData.append('sessionId', sessionId);
+      formData.append('uploadId', uploadId);
+      formData.append('chunkIndex', chunkIndex.toString());
+      formData.append('totalChunks', totalChunks.toString());
+      formData.append('file', chunk);
+
+      // Upload chunk using raw endpoint
+      const chunkResponse = await fetch('/pptx/upload-archive/chunk-raw', {
+        method: 'POST',
+        body: formData,
+        signal: abortControllerRef.current.signal,
       });
 
-      // Upload chunk
-      const chunkResponse = await backend.pptx.uploadArchiveChunk({
-        sessionId,
-        uploadId,
-        chunkIndex,
-        totalChunks,
-        chunkData,
-      });
+      if (!chunkResponse.ok) {
+        throw new Error(`Failed to upload chunk ${chunkIndex + 1}: ${chunkResponse.statusText}`);
+      }
 
-      if (!chunkResponse.success) {
-        throw new Error(chunkResponse.error || `Failed to upload chunk ${chunkIndex + 1}`);
+      const chunkResult = await chunkResponse.json();
+      if (!chunkResult.success) {
+        throw new Error(chunkResult.error || `Failed to upload chunk ${chunkIndex + 1}`);
       }
 
       const progress = 10 + ((chunkIndex + 1) / totalChunks) * 70; // 10-80% for chunk upload
@@ -274,6 +304,16 @@ export function ArchiveUpload() {
     setUploadStatus('');
   };
 
+  const getUploadMethodDescription = (fileSize: number) => {
+    if (fileSize <= MAX_SINGLE_UPLOAD_SIZE) {
+      return 'Small files will be uploaded directly';
+    } else if (fileSize <= MAX_RAW_UPLOAD_SIZE) {
+      return 'Medium files will be uploaded using raw transfer';
+    } else {
+      return 'Large files will be uploaded in chunks automatically';
+    }
+  };
+
   return (
     <div className="space-y-4">
       <h3 className="text-lg font-semibold">Upload Archive</h3>
@@ -322,12 +362,21 @@ export function ArchiveUpload() {
                   Maximum file size: 500MB
                 </p>
                 <p className="text-xs text-gray-400">
-                  Files larger than 5MB will be uploaded in chunks automatically
+                  Automatic upload method selection based on file size
                 </p>
               </div>
             </>
           )}
         </div>
+      </div>
+
+      <div className="text-xs text-gray-500 bg-gray-50 p-3 rounded">
+        <p className="font-medium mb-1">Upload Methods:</p>
+        <ul className="space-y-1">
+          <li>• Files ≤ 30MB: Direct upload</li>
+          <li>• Files ≤ 100MB: Raw file transfer</li>
+          <li>• Files &gt; 100MB: Chunked upload</li>
+        </ul>
       </div>
 
       {uploadMutation.isError && (

@@ -4,6 +4,8 @@ import { pptxDB } from "./db";
 import type { FolderData, ImageData, UploadImagesResponse } from "./types";
 import crypto from "crypto";
 import JSZip from "jszip";
+import busboy from "busboy";
+import log from "encore.dev/log";
 
 interface UploadArchiveRequest {
   sessionId: string;
@@ -32,6 +34,92 @@ interface InitiateUploadResponse {
   chunkSize?: number;
   error?: string;
 }
+
+// Raw endpoint for uploading archive files with unlimited body size
+export const uploadArchiveRaw = api.raw(
+  { 
+    expose: true, 
+    method: "POST", 
+    path: "/upload-archive-raw",
+    bodyLimit: null // Remove size limit
+  },
+  async (req, res) => {
+    try {
+      const bb = busboy({ headers: req.headers, limits: { files: 1 } });
+      let sessionId = '';
+      let fileData: Buffer | null = null;
+      let filename = '';
+
+      bb.on('field', (name, val) => {
+        if (name === 'sessionId') {
+          sessionId = val;
+        }
+      });
+
+      bb.on('file', (_, file, info) => {
+        filename = info.filename;
+        const chunks: Buffer[] = [];
+        
+        file.on('data', (data) => {
+          chunks.push(data);
+        });
+        
+        file.on('close', () => {
+          fileData = Buffer.concat(chunks);
+          log.info(`Archive file ${filename} received, size: ${fileData.length} bytes`);
+        });
+      });
+
+      bb.on('close', async () => {
+        try {
+          if (!sessionId || !fileData || !filename) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, error: 'Missing required data' }));
+            return;
+          }
+
+          if (!filename.toLowerCase().endsWith('.zip')) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, error: 'Only ZIP files are supported' }));
+            return;
+          }
+
+          log.info(`Processing archive for session: ${sessionId}, file: ${filename}`);
+
+          const folders = await processZipFile(fileData, sessionId);
+          await updateSessionFolders(sessionId, folders);
+
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            success: true,
+            folders
+          }));
+
+        } catch (error) {
+          log.error('Archive processing error:', error);
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            success: false,
+            error: error instanceof Error ? error.message : 'Failed to process archive'
+          }));
+        }
+      });
+
+      bb.on('error', (error) => {
+        log.error('Busboy error:', error);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'Upload error' }));
+      });
+
+      req.pipe(bb);
+
+    } catch (error) {
+      log.error('Upload archive raw error:', error);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: 'Server error' }));
+    }
+  }
+);
 
 // Initiates a chunked upload for large archive files.
 export const initiateArchiveUpload = api<InitiateUploadRequest, InitiateUploadResponse>(
@@ -64,9 +152,145 @@ export const initiateArchiveUpload = api<InitiateUploadRequest, InitiateUploadRe
   }
 );
 
+// Raw endpoint for uploading chunks with unlimited body size
+export const uploadArchiveChunkRaw = api.raw(
+  { 
+    expose: true, 
+    method: "POST", 
+    path: "/upload-archive/chunk-raw",
+    bodyLimit: null // Remove size limit
+  },
+  async (req, res) => {
+    try {
+      const bb = busboy({ headers: req.headers, limits: { files: 1 } });
+      let sessionId = '';
+      let uploadId = '';
+      let chunkIndex = 0;
+      let totalChunks = 0;
+      let chunkData: Buffer | null = null;
+
+      bb.on('field', (name, val) => {
+        if (name === 'sessionId') sessionId = val;
+        if (name === 'uploadId') uploadId = val;
+        if (name === 'chunkIndex') chunkIndex = parseInt(val);
+        if (name === 'totalChunks') totalChunks = parseInt(val);
+      });
+
+      bb.on('file', (_, file, info) => {
+        const chunks: Buffer[] = [];
+        
+        file.on('data', (data) => {
+          chunks.push(data);
+        });
+        
+        file.on('close', () => {
+          chunkData = Buffer.concat(chunks);
+          log.info(`Chunk ${chunkIndex + 1}/${totalChunks} received, size: ${chunkData.length} bytes`);
+        });
+      });
+
+      bb.on('close', async () => {
+        try {
+          if (!sessionId || !uploadId || chunkData === null) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, error: 'Missing required data' }));
+            return;
+          }
+
+          console.log(`Uploading chunk ${chunkIndex + 1}/${totalChunks} for upload ${uploadId}`);
+
+          // Verify upload session exists
+          const uploadSession = await pptxDB.queryRow`
+            SELECT id, status, total_chunks FROM upload_sessions WHERE upload_id = ${uploadId} AND session_id = ${sessionId}
+          `;
+
+          if (!uploadSession) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, error: 'Upload session not found' }));
+            return;
+          }
+
+          if (uploadSession.status === 'completed') {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, error: 'Upload already completed' }));
+            return;
+          }
+
+          if (uploadSession.status === 'failed') {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, error: 'Upload session failed' }));
+            return;
+          }
+
+          // Validate chunk index
+          if (chunkIndex < 0 || chunkIndex >= totalChunks) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, error: 'Invalid chunk index' }));
+            return;
+          }
+
+          // Store chunk data
+          const chunkPath = `temp/${uploadId}/chunk_${chunkIndex.toString().padStart(4, '0')}`;
+          
+          await imagesBucket.upload(chunkPath, chunkData);
+
+          // Update chunk status
+          await pptxDB.exec`
+            INSERT INTO upload_chunks (upload_id, chunk_index, chunk_path, uploaded_at)
+            VALUES (${uploadId}, ${chunkIndex}, ${chunkPath}, CURRENT_TIMESTAMP)
+            ON CONFLICT (upload_id, chunk_index) DO UPDATE SET
+              chunk_path = EXCLUDED.chunk_path,
+              uploaded_at = EXCLUDED.uploaded_at
+          `;
+
+          // Check if all chunks are uploaded
+          const uploadedChunks = await pptxDB.queryAll`
+            SELECT chunk_index FROM upload_chunks WHERE upload_id = ${uploadId} ORDER BY chunk_index
+          `;
+
+          console.log(`Uploaded chunk ${chunkIndex + 1}/${totalChunks}. Total uploaded: ${uploadedChunks.length}`);
+
+          if (uploadedChunks.length === totalChunks) {
+            // All chunks uploaded, trigger assembly
+            console.log(`All chunks uploaded for ${uploadId}, starting assembly`);
+            // Don't await this - let it run in background
+            assembleAndProcessArchive(uploadId, sessionId).catch(error => {
+              console.error(`Background assembly failed for ${uploadId}:`, error);
+            });
+          }
+
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true }));
+
+        } catch (error) {
+          log.error('Chunk upload error:', error);
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            success: false,
+            error: error instanceof Error ? error.message : 'Failed to upload chunk'
+          }));
+        }
+      });
+
+      bb.on('error', (error) => {
+        log.error('Busboy error:', error);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'Upload error' }));
+      });
+
+      req.pipe(bb);
+
+    } catch (error) {
+      log.error('Upload chunk raw error:', error);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: 'Server error' }));
+    }
+  }
+);
+
 // Uploads a chunk of the archive file.
 export const uploadArchiveChunk = api<UploadArchiveChunkRequest, { success: boolean; error?: string }>(
-  { expose: true, method: "POST", path: "/upload-archive/chunk" },
+  { expose: true, method: "POST", path: "/upload-archive/chunk", bodyLimit: 50 * 1024 * 1024 }, // 50MB limit for base64 chunks
   async (req) => {
     try {
       console.log(`Uploading chunk ${req.chunkIndex + 1}/${req.totalChunks} for upload ${req.uploadId}`);
@@ -182,7 +406,7 @@ export const getUploadStatus = api<{ uploadId: string }, { success: boolean; sta
 
 // Original single-request upload for smaller files (fallback)
 export const uploadArchive = api<UploadArchiveRequest, UploadImagesResponse>(
-  { expose: true, method: "POST", path: "/upload-archive" },
+  { expose: true, method: "POST", path: "/upload-archive", bodyLimit: 50 * 1024 * 1024 }, // 50MB limit for base64
   async (req) => {
     try {
       console.log(`Starting archive upload for session: ${req.sessionId}`);
@@ -197,8 +421,8 @@ export const uploadArchive = api<UploadArchiveRequest, UploadImagesResponse>(
 
       // Check file size (base64 encoded size)
       const estimatedSize = (req.fileData.length * 3) / 4; // Approximate original size
-      if (estimatedSize > 5 * 1024 * 1024) { // 5MB limit for single upload
-        throw APIError.invalidArgument("File too large for single upload. Use chunked upload instead.");
+      if (estimatedSize > 30 * 1024 * 1024) { // 30MB limit for single upload
+        throw APIError.invalidArgument("File too large for single upload. Use raw upload endpoint instead.");
       }
 
       // Decode base64 file data
