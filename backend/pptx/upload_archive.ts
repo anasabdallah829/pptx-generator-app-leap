@@ -9,9 +9,6 @@ interface UploadArchiveRequest {
   sessionId: string;
   filename: string;
   fileData: string; // base64 encoded
-  chunkIndex?: number;
-  totalChunks?: number;
-  uploadId?: string;
 }
 
 interface UploadArchiveChunkRequest {
@@ -26,6 +23,7 @@ interface InitiateUploadRequest {
   sessionId: string;
   filename: string;
   fileSize: number;
+  totalChunks: number;
 }
 
 interface InitiateUploadResponse {
@@ -45,9 +43,11 @@ export const initiateArchiveUpload = api<InitiateUploadRequest, InitiateUploadRe
 
       // Store upload metadata in database
       await pptxDB.exec`
-        INSERT INTO upload_sessions (upload_id, session_id, filename, file_size, status, created_at)
-        VALUES (${uploadId}, ${req.sessionId}, ${req.filename}, ${req.fileSize}, 'initiated', CURRENT_TIMESTAMP)
+        INSERT INTO upload_sessions (upload_id, session_id, filename, file_size, total_chunks, status, created_at)
+        VALUES (${uploadId}, ${req.sessionId}, ${req.filename}, ${req.fileSize}, ${req.totalChunks}, 'initiated', CURRENT_TIMESTAMP)
       `;
+
+      console.log(`Initiated upload ${uploadId} for ${req.filename} (${req.fileSize} bytes, ${req.totalChunks} chunks)`);
 
       return {
         success: true,
@@ -73,7 +73,7 @@ export const uploadArchiveChunk = api<UploadArchiveChunkRequest, { success: bool
 
       // Verify upload session exists
       const uploadSession = await pptxDB.queryRow`
-        SELECT id, status FROM upload_sessions WHERE upload_id = ${req.uploadId} AND session_id = ${req.sessionId}
+        SELECT id, status, total_chunks FROM upload_sessions WHERE upload_id = ${req.uploadId} AND session_id = ${req.sessionId}
       `;
 
       if (!uploadSession) {
@@ -84,9 +84,18 @@ export const uploadArchiveChunk = api<UploadArchiveChunkRequest, { success: bool
         throw APIError.invalidArgument("Upload already completed");
       }
 
+      if (uploadSession.status === 'failed') {
+        throw APIError.invalidArgument("Upload session failed");
+      }
+
+      // Validate chunk index
+      if (req.chunkIndex < 0 || req.chunkIndex >= req.totalChunks) {
+        throw APIError.invalidArgument("Invalid chunk index");
+      }
+
       // Store chunk data
       const chunkBuffer = Buffer.from(req.chunkData, 'base64');
-      const chunkPath = `temp/${req.uploadId}/chunk_${req.chunkIndex}`;
+      const chunkPath = `temp/${req.uploadId}/chunk_${req.chunkIndex.toString().padStart(4, '0')}`;
       
       await imagesBucket.upload(chunkPath, chunkBuffer);
 
@@ -104,8 +113,11 @@ export const uploadArchiveChunk = api<UploadArchiveChunkRequest, { success: bool
         SELECT chunk_index FROM upload_chunks WHERE upload_id = ${req.uploadId} ORDER BY chunk_index
       `;
 
+      console.log(`Uploaded chunk ${req.chunkIndex + 1}/${req.totalChunks}. Total uploaded: ${uploadedChunks.length}`);
+
       if (uploadedChunks.length === req.totalChunks) {
         // All chunks uploaded, trigger assembly
+        console.log(`All chunks uploaded for ${req.uploadId}, starting assembly`);
         await assembleAndProcessArchive(req.uploadId, req.sessionId);
       }
 
@@ -129,7 +141,7 @@ export const getUploadStatus = api<{ uploadId: string }, { success: boolean; sta
   async (req) => {
     try {
       const uploadSession = await pptxDB.queryRow`
-        SELECT status, total_chunks, error_message FROM upload_sessions WHERE upload_id = ${req.uploadId}
+        SELECT status, total_chunks, error_message, result_data FROM upload_sessions WHERE upload_id = ${req.uploadId}
       `;
 
       if (!uploadSession) {
@@ -144,13 +156,8 @@ export const getUploadStatus = api<{ uploadId: string }, { success: boolean; sta
         (uploadedChunks.length / uploadSession.total_chunks) * 100 : 0;
 
       let folders: FolderData[] | undefined;
-      if (uploadSession.status === 'completed') {
-        const result = await pptxDB.queryRow`
-          SELECT result_data FROM upload_sessions WHERE upload_id = ${req.uploadId}
-        `;
-        if (result?.result_data) {
-          folders = result.result_data as FolderData[];
-        }
+      if (uploadSession.status === 'completed' && uploadSession.result_data) {
+        folders = uploadSession.result_data as FolderData[];
       }
 
       return {
@@ -190,7 +197,7 @@ export const uploadArchive = api<UploadArchiveRequest, UploadImagesResponse>(
 
       // Check file size (base64 encoded size)
       const estimatedSize = (req.fileData.length * 3) / 4; // Approximate original size
-      if (estimatedSize > 10 * 1024 * 1024) { // 10MB limit for single upload
+      if (estimatedSize > 5 * 1024 * 1024) { // 5MB limit for single upload
         throw APIError.invalidArgument("File too large for single upload. Use chunked upload instead.");
       }
 
@@ -233,18 +240,26 @@ async function assembleAndProcessArchive(uploadId: string, sessionId: string): P
       WHERE upload_id = ${uploadId}
     `;
 
-    // Get all chunks
+    // Get all chunks in order
     const chunks = await pptxDB.queryAll`
       SELECT chunk_index, chunk_path FROM upload_chunks 
       WHERE upload_id = ${uploadId} 
       ORDER BY chunk_index
     `;
 
+    console.log(`Found ${chunks.length} chunks for assembly`);
+
     // Download and assemble chunks
     const chunkBuffers: Buffer[] = [];
     for (const chunk of chunks) {
-      const chunkBuffer = await imagesBucket.download(chunk.chunk_path);
-      chunkBuffers.push(chunkBuffer);
+      try {
+        const chunkBuffer = await imagesBucket.download(chunk.chunk_path);
+        chunkBuffers.push(chunkBuffer);
+        console.log(`Downloaded chunk ${chunk.chunk_index}, size: ${chunkBuffer.length} bytes`);
+      } catch (error) {
+        console.error(`Failed to download chunk ${chunk.chunk_index}:`, error);
+        throw new Error(`Failed to download chunk ${chunk.chunk_index}`);
+      }
     }
 
     const assembledBuffer = Buffer.concat(chunkBuffers);

@@ -9,8 +9,8 @@ import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import backend from '~backend/client';
 
-const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB chunks
-const MAX_SINGLE_UPLOAD_SIZE = 10 * 1024 * 1024; // 10MB
+const CHUNK_SIZE = 4 * 1024 * 1024; // 4MB chunks (smaller for better reliability)
+const MAX_SINGLE_UPLOAD_SIZE = 5 * 1024 * 1024; // 5MB
 
 export function ArchiveUpload() {
   const { t } = useLanguage();
@@ -116,6 +116,8 @@ export function ArchiveUpload() {
     // Create abort controller for this upload
     abortControllerRef.current = new AbortController();
 
+    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+    
     setUploadStatus('Initiating chunked upload...');
     setUploadProgress(5);
 
@@ -124,6 +126,7 @@ export function ArchiveUpload() {
       sessionId,
       filename: file.name,
       fileSize: file.size,
+      totalChunks,
     });
 
     if (!initResponse.success || !initResponse.uploadId) {
@@ -131,8 +134,6 @@ export function ArchiveUpload() {
     }
 
     const uploadId = initResponse.uploadId;
-    const chunkSize = initResponse.chunkSize || CHUNK_SIZE;
-    const totalChunks = Math.ceil(file.size / chunkSize);
 
     setUploadStatus(`Uploading chunks (0/${totalChunks})...`);
     setUploadProgress(10);
@@ -143,8 +144,8 @@ export function ArchiveUpload() {
         throw new Error('Upload cancelled');
       }
 
-      const start = chunkIndex * chunkSize;
-      const end = Math.min(start + chunkSize, file.size);
+      const start = chunkIndex * CHUNK_SIZE;
+      const end = Math.min(start + CHUNK_SIZE, file.size);
       const chunk = file.slice(start, end);
 
       // Convert chunk to base64
@@ -185,7 +186,7 @@ export function ArchiveUpload() {
   };
 
   const pollUploadStatus = async (uploadId: string): Promise<any> => {
-    const maxAttempts = 60; // 5 minutes max
+    const maxAttempts = 120; // 10 minutes max
     let attempts = 0;
 
     while (attempts < maxAttempts) {
@@ -193,31 +194,37 @@ export function ArchiveUpload() {
         throw new Error('Upload cancelled');
       }
 
-      const statusResponse = await backend.pptx.getUploadStatus({ uploadId });
-      
-      if (!statusResponse.success) {
-        throw new Error(statusResponse.error || 'Failed to get upload status');
+      try {
+        const statusResponse = await backend.pptx.getUploadStatus({ uploadId });
+        
+        if (!statusResponse.success) {
+          throw new Error(statusResponse.error || 'Failed to get upload status');
+        }
+
+        const { status, progress, folders, error } = statusResponse;
+
+        if (status === 'completed') {
+          setUploadProgress(100);
+          return { success: true, folders };
+        }
+
+        if (status === 'failed') {
+          throw new Error(error || 'Upload processing failed');
+        }
+
+        if (status === 'processing') {
+          const processingProgress = 85 + (progress || 0) * 0.15; // 85-100% for processing
+          setUploadProgress(processingProgress);
+          setUploadStatus('Processing archive...');
+        }
+
+        attempts++;
+        await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5 seconds
+      } catch (error) {
+        console.error('Error polling upload status:', error);
+        attempts++;
+        await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5 seconds before retry
       }
-
-      const { status, progress, folders, error } = statusResponse;
-
-      if (status === 'completed') {
-        setUploadProgress(100);
-        return { success: true, folders };
-      }
-
-      if (status === 'failed') {
-        throw new Error(error || 'Upload processing failed');
-      }
-
-      if (status === 'processing') {
-        const processingProgress = 85 + (progress || 0) * 0.15; // 85-100% for processing
-        setUploadProgress(processingProgress);
-        setUploadStatus('Processing archive...');
-      }
-
-      attempts++;
-      await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5 seconds
     }
 
     throw new Error('Upload processing timeout');
@@ -315,7 +322,7 @@ export function ArchiveUpload() {
                   Maximum file size: 500MB
                 </p>
                 <p className="text-xs text-gray-400">
-                  Large files will be uploaded in chunks automatically
+                  Files larger than 5MB will be uploaded in chunks automatically
                 </p>
               </div>
             </>
