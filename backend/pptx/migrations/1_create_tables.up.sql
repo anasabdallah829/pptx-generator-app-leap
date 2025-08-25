@@ -1,0 +1,25 @@
+CREATE TABLE templates (
+  id BIGSERIAL PRIMARY KEY,
+  filename TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  hash TEXT NOT NULL UNIQUE,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE sessions (
+  id BIGSERIAL PRIMARY KEY,
+  session_id TEXT NOT NULL UNIQUE,
+  template_id BIGINT REFERENCES templates(id),
+  folders_data JSONB NOT NULL DEFAULT '[]',
+  settings_data JSONB NOT NULL DEFAULT '{}',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE generated_files (
+  id BIGSERIAL PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  filename TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
