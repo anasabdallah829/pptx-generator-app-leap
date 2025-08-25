@@ -9,6 +9,8 @@ import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Separator } from '@/components/ui/separator';
+import { ArchiveUpload } from './ArchiveUpload';
 import backend from '~backend/client';
 
 export function ImageUpload() {
@@ -116,9 +118,11 @@ export function ImageUpload() {
   });
 
   return (
-    <div className="space-y-4">
-      <h2 className="text-xl font-semibold">{t('upload.images')}</h2>
-      <p className="text-gray-600">{t('upload.images.description')}</p>
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-xl font-semibold">{t('upload.images')}</h2>
+        <p className="text-gray-600">{t('upload.images.description')}</p>
+      </div>
 
       <div className="space-y-4">
         <div className="flex items-center space-x-4">
@@ -181,6 +185,10 @@ export function ImageUpload() {
           </div>
         </div>
       </div>
+
+      <Separator />
+
+      <ArchiveUpload />
 
       {folders.length > 0 && (
         <div className="space-y-2">

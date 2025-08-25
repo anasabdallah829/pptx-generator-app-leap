@@ -6,11 +6,13 @@ import { FolderManager } from './components/FolderManager';
 import { SettingsPanel } from './components/SettingsPanel';
 import { PreviewPanel } from './components/PreviewPanel';
 import { GenerateButton } from './components/GenerateButton';
+import { SessionManager } from './components/SessionManager';
+import { GeneratedFilesManager } from './components/GeneratedFilesManager';
 import { useSession } from './contexts/SessionContext';
 
 export default function AppInner() {
   const { template, folders } = useSession();
-  const [activeTab, setActiveTab] = useState<'upload' | 'organize' | 'settings' | 'preview'>('upload');
+  const [activeTab, setActiveTab] = useState<'upload' | 'organize' | 'settings' | 'preview' | 'manage'>('upload');
 
   const canProceed = template && folders.length > 0;
 
@@ -73,6 +75,16 @@ export default function AppInner() {
               >
                 Preview
               </button>
+              <button
+                onClick={() => setActiveTab('manage')}
+                className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-colors ${
+                  activeTab === 'manage'
+                    ? 'bg-blue-500 text-white'
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                Manage
+              </button>
             </div>
 
             {/* Tab Content */}
@@ -94,6 +106,13 @@ export default function AppInner() {
               
               {activeTab === 'preview' && canProceed && (
                 <PreviewPanel />
+              )}
+
+              {activeTab === 'manage' && (
+                <div className="space-y-8">
+                  <GeneratedFilesManager />
+                  <SessionManager />
+                </div>
               )}
             </div>
           </div>

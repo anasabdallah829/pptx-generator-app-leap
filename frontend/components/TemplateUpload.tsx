@@ -7,6 +7,8 @@ import { useSession } from '../contexts/SessionContext';
 import { useToast } from '@/components/ui/use-toast';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
+import { Separator } from '@/components/ui/separator';
+import { TemplateManager } from './TemplateManager';
 import backend from '~backend/client';
 
 export function TemplateUpload() {
@@ -103,7 +105,7 @@ export function TemplateUpload() {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold">{t('upload.template')}</h2>
         {template && (
@@ -119,7 +121,7 @@ export function TemplateUpload() {
         <div className="flex items-center space-x-3 p-4 bg-green-50 border border-green-200 rounded-lg">
           <CheckCircle className="h-5 w-5 text-green-600" />
           <div>
-            <p className="font-medium text-green-900">Template Uploaded</p>
+            <p className="font-medium text-green-900">Template Selected</p>
             <p className="text-sm text-green-700">
               {template.placeholders.length} placeholders detected
             </p>
@@ -167,6 +169,10 @@ export function TemplateUpload() {
           <p className="text-red-700">Failed to upload template. Please try again.</p>
         </div>
       )}
+
+      <Separator />
+
+      <TemplateManager />
     </div>
   );
 }
