@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useState, useRef } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { Upload, Archive, CheckCircle, AlertCircle, FolderPlus } from 'lucide-react';
 import { useMutation } from '@tanstack/react-query';
@@ -9,48 +9,32 @@ import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import backend from '~backend/client';
 
+const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB chunks
+const MAX_SINGLE_UPLOAD_SIZE = 10 * 1024 * 1024; // 10MB
+
 export function ArchiveUpload() {
   const { t } = useLanguage();
   const { sessionId, folders, setFolders } = useSession();
   const { toast } = useToast();
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadStatus, setUploadStatus] = useState<string>('');
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const uploadMutation = useMutation({
     mutationFn: async (file: File) => {
       try {
-        setUploadProgress(10);
+        setUploadProgress(5);
+        setUploadStatus('Preparing upload...');
 
-        // Convert file to base64
-        const fileData = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => {
-            const result = reader.result as string;
-            const base64Data = result.split(',')[1]; // Remove data:... prefix
-            resolve(base64Data);
-          };
-          reader.onerror = () => reject(new Error('Failed to read file'));
-          reader.readAsDataURL(file);
-        });
-
-        setUploadProgress(30);
-
-        // Upload to backend
-        const response = await backend.pptx.uploadArchive({
-          sessionId,
-          filename: file.name,
-          fileData,
-        });
-
-        setUploadProgress(90);
-
-        if (!response.success) {
-          throw new Error(response.error || 'Upload failed');
+        // Check file size to determine upload method
+        if (file.size <= MAX_SINGLE_UPLOAD_SIZE) {
+          return await uploadSingleFile(file);
+        } else {
+          return await uploadChunkedFile(file);
         }
-
-        setUploadProgress(100);
-        return response;
       } catch (error) {
         setUploadProgress(0);
+        setUploadStatus('');
         throw error;
       }
     },
@@ -84,6 +68,7 @@ export function ArchiveUpload() {
         });
       }
       setUploadProgress(0);
+      setUploadStatus('');
     },
     onError: (error) => {
       console.error('Upload archive error:', error);
@@ -93,8 +78,150 @@ export function ArchiveUpload() {
         variant: 'destructive',
       });
       setUploadProgress(0);
+      setUploadStatus('');
     },
   });
+
+  const uploadSingleFile = async (file: File) => {
+    setUploadStatus('Reading file...');
+    setUploadProgress(10);
+
+    // Convert file to base64
+    const fileData = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as string;
+        const base64Data = result.split(',')[1]; // Remove data:... prefix
+        resolve(base64Data);
+      };
+      reader.onerror = () => reject(new Error('Failed to read file'));
+      reader.readAsDataURL(file);
+    });
+
+    setUploadStatus('Uploading...');
+    setUploadProgress(50);
+
+    // Upload to backend
+    const response = await backend.pptx.uploadArchive({
+      sessionId,
+      filename: file.name,
+      fileData,
+    });
+
+    setUploadProgress(100);
+    return response;
+  };
+
+  const uploadChunkedFile = async (file: File) => {
+    // Create abort controller for this upload
+    abortControllerRef.current = new AbortController();
+
+    setUploadStatus('Initiating chunked upload...');
+    setUploadProgress(5);
+
+    // Initiate chunked upload
+    const initResponse = await backend.pptx.initiateArchiveUpload({
+      sessionId,
+      filename: file.name,
+      fileSize: file.size,
+    });
+
+    if (!initResponse.success || !initResponse.uploadId) {
+      throw new Error(initResponse.error || 'Failed to initiate upload');
+    }
+
+    const uploadId = initResponse.uploadId;
+    const chunkSize = initResponse.chunkSize || CHUNK_SIZE;
+    const totalChunks = Math.ceil(file.size / chunkSize);
+
+    setUploadStatus(`Uploading chunks (0/${totalChunks})...`);
+    setUploadProgress(10);
+
+    // Upload chunks
+    for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+      if (abortControllerRef.current?.signal.aborted) {
+        throw new Error('Upload cancelled');
+      }
+
+      const start = chunkIndex * chunkSize;
+      const end = Math.min(start + chunkSize, file.size);
+      const chunk = file.slice(start, end);
+
+      // Convert chunk to base64
+      const chunkData = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = reader.result as string;
+          const base64Data = result.split(',')[1]; // Remove data:... prefix
+          resolve(base64Data);
+        };
+        reader.onerror = () => reject(new Error('Failed to read chunk'));
+        reader.readAsDataURL(chunk);
+      });
+
+      // Upload chunk
+      const chunkResponse = await backend.pptx.uploadArchiveChunk({
+        sessionId,
+        uploadId,
+        chunkIndex,
+        totalChunks,
+        chunkData,
+      });
+
+      if (!chunkResponse.success) {
+        throw new Error(chunkResponse.error || `Failed to upload chunk ${chunkIndex + 1}`);
+      }
+
+      const progress = 10 + ((chunkIndex + 1) / totalChunks) * 70; // 10-80% for chunk upload
+      setUploadProgress(progress);
+      setUploadStatus(`Uploading chunks (${chunkIndex + 1}/${totalChunks})...`);
+    }
+
+    setUploadStatus('Processing archive...');
+    setUploadProgress(85);
+
+    // Poll for completion
+    return await pollUploadStatus(uploadId);
+  };
+
+  const pollUploadStatus = async (uploadId: string): Promise<any> => {
+    const maxAttempts = 60; // 5 minutes max
+    let attempts = 0;
+
+    while (attempts < maxAttempts) {
+      if (abortControllerRef.current?.signal.aborted) {
+        throw new Error('Upload cancelled');
+      }
+
+      const statusResponse = await backend.pptx.getUploadStatus({ uploadId });
+      
+      if (!statusResponse.success) {
+        throw new Error(statusResponse.error || 'Failed to get upload status');
+      }
+
+      const { status, progress, folders, error } = statusResponse;
+
+      if (status === 'completed') {
+        setUploadProgress(100);
+        return { success: true, folders };
+      }
+
+      if (status === 'failed') {
+        throw new Error(error || 'Upload processing failed');
+      }
+
+      if (status === 'processing') {
+        const processingProgress = 85 + (progress || 0) * 0.15; // 85-100% for processing
+        setUploadProgress(processingProgress);
+        setUploadStatus('Processing archive...');
+      }
+
+      attempts++;
+      await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5 seconds
+    }
+
+    throw new Error('Upload processing timeout');
+  };
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     const file = acceptedFiles[0];
@@ -108,10 +235,10 @@ export function ArchiveUpload() {
         return;
       }
 
-      if (file.size > 100 * 1024 * 1024) { // 100MB limit
+      if (file.size > 500 * 1024 * 1024) { // 500MB limit
         toast({
           title: 'File Too Large',
-          description: 'Please upload a file smaller than 100MB',
+          description: 'Please upload a file smaller than 500MB',
           variant: 'destructive',
         });
         return;
@@ -130,6 +257,15 @@ export function ArchiveUpload() {
     maxFiles: 1,
     disabled: uploadMutation.isPending,
   });
+
+  const handleCancel = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    uploadMutation.reset();
+    setUploadProgress(0);
+    setUploadStatus('');
+  };
 
   return (
     <div className="space-y-4">
@@ -152,13 +288,17 @@ export function ArchiveUpload() {
             <div className="space-y-3">
               <Upload className="h-10 w-10 text-purple-500 mx-auto animate-pulse" />
               <div className="space-y-2">
-                <p className="font-medium">
-                  {uploadProgress < 30 ? 'Reading file...' : 
-                   uploadProgress < 90 ? 'Extracting archive...' : 
-                   'Processing images...'}
-                </p>
+                <p className="font-medium">{uploadStatus}</p>
                 <Progress value={uploadProgress} className="w-full max-w-xs mx-auto" />
-                <p className="text-sm text-gray-500">{uploadProgress}%</p>
+                <p className="text-sm text-gray-500">{Math.round(uploadProgress)}%</p>
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={handleCancel}
+                  className="mt-2"
+                >
+                  Cancel Upload
+                </Button>
               </div>
             </div>
           ) : (
@@ -172,7 +312,10 @@ export function ArchiveUpload() {
                   Drag and drop a ZIP file here, or click to select
                 </p>
                 <p className="text-xs text-gray-400 mt-1">
-                  Maximum file size: 100MB
+                  Maximum file size: 500MB
+                </p>
+                <p className="text-xs text-gray-400">
+                  Large files will be uploaded in chunks automatically
                 </p>
               </div>
             </>
