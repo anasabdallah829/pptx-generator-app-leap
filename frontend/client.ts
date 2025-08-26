@@ -92,7 +92,12 @@ import { listSessions as api_pptx_list_sessions_listSessions } from "~backend/pp
 import { listTemplates as api_pptx_list_templates_listTemplates } from "~backend/pptx/list_templates";
 import { preview as api_pptx_preview_preview } from "~backend/pptx/preview";
 import { updateSession as api_pptx_update_session_updateSession } from "~backend/pptx/update_session";
-import { uploadArchive as api_pptx_upload_archive_uploadArchive } from "~backend/pptx/upload_archive";
+import {
+    getUploadStatus as api_pptx_upload_archive_getUploadStatus,
+    initiateArchiveUpload as api_pptx_upload_archive_initiateArchiveUpload,
+    uploadArchive as api_pptx_upload_archive_uploadArchive,
+    uploadArchiveChunk as api_pptx_upload_archive_uploadArchiveChunk
+} from "~backend/pptx/upload_archive";
 import { uploadImages as api_pptx_upload_images_uploadImages } from "~backend/pptx/upload_images";
 import { uploadTemplate as api_pptx_upload_template_uploadTemplate } from "~backend/pptx/upload_template";
 
@@ -108,12 +113,15 @@ export namespace pptx {
             this.deleteTemplate = this.deleteTemplate.bind(this)
             this.generate = this.generate.bind(this)
             this.getSession = this.getSession.bind(this)
+            this.getUploadStatus = this.getUploadStatus.bind(this)
+            this.initiateArchiveUpload = this.initiateArchiveUpload.bind(this)
             this.listGeneratedFiles = this.listGeneratedFiles.bind(this)
             this.listSessions = this.listSessions.bind(this)
             this.listTemplates = this.listTemplates.bind(this)
             this.preview = this.preview.bind(this)
             this.updateSession = this.updateSession.bind(this)
             this.uploadArchive = this.uploadArchive.bind(this)
+            this.uploadArchiveChunk = this.uploadArchiveChunk.bind(this)
             this.uploadImages = this.uploadImages.bind(this)
             this.uploadTemplate = this.uploadTemplate.bind(this)
         }
@@ -161,6 +169,24 @@ export namespace pptx {
             // Now make the actual call to the API
             const resp = await this.baseClient.callTypedAPI(`/sessions/${encodeURIComponent(params.sessionId)}`, {method: "GET", body: undefined})
             return JSON.parse(await resp.text(), dateReviver) as ResponseType<typeof api_pptx_get_session_getSession>
+        }
+
+        /**
+         * Gets the status of a chunked upload.
+         */
+        public async getUploadStatus(params: { uploadId: string }): Promise<ResponseType<typeof api_pptx_upload_archive_getUploadStatus>> {
+            // Now make the actual call to the API
+            const resp = await this.baseClient.callTypedAPI(`/upload-archive/status/${encodeURIComponent(params.uploadId)}`, {method: "GET", body: undefined})
+            return JSON.parse(await resp.text(), dateReviver) as ResponseType<typeof api_pptx_upload_archive_getUploadStatus>
+        }
+
+        /**
+         * Initiates a chunked upload for large archive files.
+         */
+        public async initiateArchiveUpload(params: RequestType<typeof api_pptx_upload_archive_initiateArchiveUpload>): Promise<ResponseType<typeof api_pptx_upload_archive_initiateArchiveUpload>> {
+            // Now make the actual call to the API
+            const resp = await this.baseClient.callTypedAPI(`/upload-archive/initiate`, {method: "POST", body: JSON.stringify(params)})
+            return JSON.parse(await resp.text(), dateReviver) as ResponseType<typeof api_pptx_upload_archive_initiateArchiveUpload>
         }
 
         /**
@@ -220,12 +246,21 @@ export namespace pptx {
         }
 
         /**
-         * Uploads and extracts images from archive files (ZIP).
+         * Original single-request upload for smaller files (fallback)
          */
         public async uploadArchive(params: RequestType<typeof api_pptx_upload_archive_uploadArchive>): Promise<ResponseType<typeof api_pptx_upload_archive_uploadArchive>> {
             // Now make the actual call to the API
             const resp = await this.baseClient.callTypedAPI(`/upload-archive`, {method: "POST", body: JSON.stringify(params)})
             return JSON.parse(await resp.text(), dateReviver) as ResponseType<typeof api_pptx_upload_archive_uploadArchive>
+        }
+
+        /**
+         * Uploads a chunk of the archive file.
+         */
+        public async uploadArchiveChunk(params: RequestType<typeof api_pptx_upload_archive_uploadArchiveChunk>): Promise<ResponseType<typeof api_pptx_upload_archive_uploadArchiveChunk>> {
+            // Now make the actual call to the API
+            const resp = await this.baseClient.callTypedAPI(`/upload-archive/chunk`, {method: "POST", body: JSON.stringify(params)})
+            return JSON.parse(await resp.text(), dateReviver) as ResponseType<typeof api_pptx_upload_archive_uploadArchiveChunk>
         }
 
         /**

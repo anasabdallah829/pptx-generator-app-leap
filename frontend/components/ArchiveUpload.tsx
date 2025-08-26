@@ -17,54 +17,79 @@ export function ArchiveUpload() {
 
   const uploadMutation = useMutation({
     mutationFn: async (file: File) => {
-      setUploadProgress(10);
+      try {
+        setUploadProgress(10);
 
-      const fileData = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          const result = reader.result as string;
-          resolve(result.split(',')[1]); // Remove data:... prefix
-        };
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
-      });
+        // Convert file to base64
+        const fileData = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const result = reader.result as string;
+            const base64Data = result.split(',')[1]; // Remove data:... prefix
+            resolve(base64Data);
+          };
+          reader.onerror = () => reject(new Error('Failed to read file'));
+          reader.readAsDataURL(file);
+        });
 
-      setUploadProgress(50);
+        setUploadProgress(30);
 
-      const response = await backend.pptx.uploadArchive({
-        sessionId,
-        filename: file.name,
-        fileData,
-      });
+        // Upload to backend
+        const response = await backend.pptx.uploadArchive({
+          sessionId,
+          filename: file.name,
+          fileData,
+        });
 
-      setUploadProgress(100);
-      return response;
+        setUploadProgress(90);
+
+        if (!response.success) {
+          throw new Error(response.error || 'Upload failed');
+        }
+
+        setUploadProgress(100);
+        return response;
+      } catch (error) {
+        setUploadProgress(0);
+        throw error;
+      }
     },
     onSuccess: (data) => {
-      if (data.success && data.folders) {
-        // Merge with existing folders
-        const existingFolderIds = new Set(folders.map(f => f.id));
-        const newFolders = data.folders.filter(f => !existingFolderIds.has(f.id));
-        setFolders([...folders, ...newFolders]);
-        
+      try {
+        if (data.success && data.folders) {
+          // Merge with existing folders
+          const existingFolderIds = new Set(folders.map(f => f.id));
+          const newFolders = data.folders.filter(f => !existingFolderIds.has(f.id));
+          const updatedFolders = [...folders, ...newFolders];
+          setFolders(updatedFolders);
+          
+          const totalImages = data.folders.reduce((acc, f) => acc + f.images.length, 0);
+          toast({
+            title: 'Archive Extracted Successfully',
+            description: `Extracted ${totalImages} images from ${data.folders.length} folders`,
+          });
+        } else {
+          toast({
+            title: 'Upload Failed',
+            description: data.error || 'Failed to extract archive',
+            variant: 'destructive',
+          });
+        }
+      } catch (error) {
+        console.error('Success handler error:', error);
         toast({
-          title: 'Success',
-          description: `Extracted ${data.folders.reduce((acc, f) => acc + f.images.length, 0)} images from ${data.folders.length} folders`,
-        });
-      } else {
-        toast({
-          title: 'Error',
-          description: data.error || 'Failed to upload archive',
+          title: 'Error Processing Response',
+          description: 'Archive uploaded but failed to process response',
           variant: 'destructive',
         });
       }
       setUploadProgress(0);
     },
     onError: (error) => {
-      console.error('Upload error:', error);
+      console.error('Upload archive error:', error);
       toast({
-        title: 'Error',
-        description: 'Failed to upload archive',
+        title: 'Upload Failed',
+        description: error instanceof Error ? error.message : 'Failed to upload archive',
         variant: 'destructive',
       });
       setUploadProgress(0);
@@ -76,12 +101,22 @@ export function ArchiveUpload() {
     if (file) {
       if (!file.name.toLowerCase().endsWith('.zip')) {
         toast({
-          title: 'Invalid File',
+          title: 'Invalid File Type',
           description: 'Please upload a ZIP file',
           variant: 'destructive',
         });
         return;
       }
+
+      if (file.size > 100 * 1024 * 1024) { // 100MB limit
+        toast({
+          title: 'File Too Large',
+          description: 'Please upload a file smaller than 100MB',
+          variant: 'destructive',
+        });
+        return;
+      }
+
       uploadMutation.mutate(file);
     }
   }, [uploadMutation, toast]);
@@ -90,8 +125,10 @@ export function ArchiveUpload() {
     onDrop,
     accept: {
       'application/zip': ['.zip'],
+      'application/x-zip-compressed': ['.zip'],
     },
     maxFiles: 1,
+    disabled: uploadMutation.isPending,
   });
 
   return (
@@ -102,7 +139,9 @@ export function ArchiveUpload() {
       <div
         {...getRootProps()}
         className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors ${
-          isDragActive
+          uploadMutation.isPending
+            ? 'border-gray-200 bg-gray-50 cursor-not-allowed'
+            : isDragActive
             ? 'border-purple-400 bg-purple-50'
             : 'border-gray-300 hover:border-gray-400'
         }`}
@@ -113,8 +152,13 @@ export function ArchiveUpload() {
             <div className="space-y-3">
               <Upload className="h-10 w-10 text-purple-500 mx-auto animate-pulse" />
               <div className="space-y-2">
-                <p className="font-medium">Extracting archive...</p>
+                <p className="font-medium">
+                  {uploadProgress < 30 ? 'Reading file...' : 
+                   uploadProgress < 90 ? 'Extracting archive...' : 
+                   'Processing images...'}
+                </p>
                 <Progress value={uploadProgress} className="w-full max-w-xs mx-auto" />
+                <p className="text-sm text-gray-500">{uploadProgress}%</p>
               </div>
             </div>
           ) : (
@@ -127,6 +171,9 @@ export function ArchiveUpload() {
                 <p className="text-sm text-gray-500">
                   Drag and drop a ZIP file here, or click to select
                 </p>
+                <p className="text-xs text-gray-400 mt-1">
+                  Maximum file size: 100MB
+                </p>
               </div>
             </>
           )}
@@ -135,8 +182,15 @@ export function ArchiveUpload() {
 
       {uploadMutation.isError && (
         <div className="flex items-center space-x-3 p-3 bg-red-50 border border-red-200 rounded-lg">
-          <AlertCircle className="h-4 w-4 text-red-600" />
-          <p className="text-red-700 text-sm">Failed to upload archive. Please try again.</p>
+          <AlertCircle className="h-4 w-4 text-red-600 flex-shrink-0" />
+          <div className="flex-1">
+            <p className="text-red-700 text-sm font-medium">Upload Failed</p>
+            <p className="text-red-600 text-xs">
+              {uploadMutation.error instanceof Error 
+                ? uploadMutation.error.message 
+                : 'Please check your file and try again'}
+            </p>
+          </div>
         </div>
       )}
     </div>
