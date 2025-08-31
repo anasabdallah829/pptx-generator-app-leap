@@ -5,6 +5,7 @@ import { ImageUpload } from './components/ImageUpload';
 import { FolderManager } from './components/FolderManager';
 import { SettingsPanel } from './components/SettingsPanel';
 import { PreviewPanel } from './components/PreviewPanel';
+import { InteractiveSlideEditor } from './components/InteractiveSlideEditor';
 import { GenerateButton } from './components/GenerateButton';
 import { SessionManager } from './components/SessionManager';
 import { GeneratedFilesManager } from './components/GeneratedFilesManager';
@@ -12,7 +13,7 @@ import { useSession } from './contexts/SessionContext';
 
 export default function AppInner() {
   const { template, folders } = useSession();
-  const [activeTab, setActiveTab] = useState<'upload' | 'organize' | 'settings' | 'preview' | 'manage'>('upload');
+  const [activeTab, setActiveTab] = useState<'upload' | 'organize' | 'settings' | 'edit' | 'preview' | 'manage'>('upload');
 
   const canProceed = template && folders.length > 0;
 
@@ -63,6 +64,19 @@ export default function AppInner() {
                 Settings
               </button>
               <button
+                onClick={() => setActiveTab('edit')}
+                disabled={!canProceed}
+                className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-colors ${
+                  activeTab === 'edit'
+                    ? 'bg-blue-500 text-white'
+                    : canProceed
+                    ? 'text-gray-600 hover:text-gray-900'
+                    : 'text-gray-400 cursor-not-allowed'
+                }`}
+              >
+                Edit
+              </button>
+              <button
                 onClick={() => setActiveTab('preview')}
                 disabled={!canProceed}
                 className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-colors ${
@@ -103,6 +117,10 @@ export default function AppInner() {
               {activeTab === 'settings' && canProceed && (
                 <SettingsPanel />
               )}
+
+              {activeTab === 'edit' && canProceed && (
+                <InteractiveSlideEditor />
+              )}
               
               {activeTab === 'preview' && canProceed && (
                 <PreviewPanel />
@@ -138,6 +156,26 @@ export default function AppInner() {
                     </span>
                   </div>
                 </div>
+
+                {canProceed && (
+                  <div className="pt-4 border-t">
+                    <p className="text-sm text-gray-600 mb-2">Quick Navigation:</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        onClick={() => setActiveTab('edit')}
+                        className="text-xs py-2 px-3 bg-purple-100 text-purple-700 rounded hover:bg-purple-200 transition-colors"
+                      >
+                        Interactive Editor
+                      </button>
+                      <button
+                        onClick={() => setActiveTab('preview')}
+                        className="text-xs py-2 px-3 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 transition-colors"
+                      >
+                        Preview
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>

@@ -87,10 +87,12 @@ import { deleteSession as api_pptx_delete_session_deleteSession } from "~backend
 import { deleteTemplate as api_pptx_delete_template_deleteTemplate } from "~backend/pptx/delete_template";
 import { generate as api_pptx_generate_generate } from "~backend/pptx/generate";
 import { getSession as api_pptx_get_session_getSession } from "~backend/pptx/get_session";
+import { interactivePreview as api_pptx_interactive_preview_interactivePreview } from "~backend/pptx/interactive_preview";
 import { listGeneratedFiles as api_pptx_list_generated_files_listGeneratedFiles } from "~backend/pptx/list_generated_files";
 import { listSessions as api_pptx_list_sessions_listSessions } from "~backend/pptx/list_sessions";
 import { listTemplates as api_pptx_list_templates_listTemplates } from "~backend/pptx/list_templates";
 import { preview as api_pptx_preview_preview } from "~backend/pptx/preview";
+import { updatePlaceholder as api_pptx_update_placeholder_updatePlaceholder } from "~backend/pptx/update_placeholder";
 import { updateSession as api_pptx_update_session_updateSession } from "~backend/pptx/update_session";
 import {
     getUploadStatus as api_pptx_upload_archive_getUploadStatus,
@@ -115,10 +117,12 @@ export namespace pptx {
             this.getSession = this.getSession.bind(this)
             this.getUploadStatus = this.getUploadStatus.bind(this)
             this.initiateArchiveUpload = this.initiateArchiveUpload.bind(this)
+            this.interactivePreview = this.interactivePreview.bind(this)
             this.listGeneratedFiles = this.listGeneratedFiles.bind(this)
             this.listSessions = this.listSessions.bind(this)
             this.listTemplates = this.listTemplates.bind(this)
             this.preview = this.preview.bind(this)
+            this.updatePlaceholder = this.updatePlaceholder.bind(this)
             this.updateSession = this.updateSession.bind(this)
             this.uploadArchive = this.uploadArchive.bind(this)
             this.uploadArchiveChunk = this.uploadArchiveChunk.bind(this)
@@ -193,6 +197,21 @@ export namespace pptx {
         }
 
         /**
+         * Returns interactive preview data for the presentation with clickable placeholders.
+         */
+        public async interactivePreview(params: RequestType<typeof api_pptx_interactive_preview_interactivePreview>): Promise<ResponseType<typeof api_pptx_interactive_preview_interactivePreview>> {
+            // Convert our params into the objects we need for the request
+            const query = makeRecord<string, string | string[]>({
+                sessionId:  params.sessionId,
+                templateId: params.templateId === undefined ? undefined : String(params.templateId),
+            })
+
+            // Now make the actual call to the API
+            const resp = await this.baseClient.callTypedAPI(`/interactive-preview`, {query, method: "GET", body: undefined})
+            return JSON.parse(await resp.text(), dateReviver) as ResponseType<typeof api_pptx_interactive_preview_interactivePreview>
+        }
+
+        /**
          * Lists generated presentation files, optionally filtered by session.
          */
         public async listGeneratedFiles(params: RequestType<typeof api_pptx_list_generated_files_listGeneratedFiles>): Promise<ResponseType<typeof api_pptx_list_generated_files_listGeneratedFiles>> {
@@ -237,6 +256,15 @@ export namespace pptx {
             // Now make the actual call to the API
             const resp = await this.baseClient.callTypedAPI(`/preview`, {query, method: "GET", body: undefined})
             return JSON.parse(await resp.text(), dateReviver) as ResponseType<typeof api_pptx_preview_preview>
+        }
+
+        /**
+         * Updates placeholder properties and position for a specific slide.
+         */
+        public async updatePlaceholder(params: RequestType<typeof api_pptx_update_placeholder_updatePlaceholder>): Promise<ResponseType<typeof api_pptx_update_placeholder_updatePlaceholder>> {
+            // Now make the actual call to the API
+            const resp = await this.baseClient.callTypedAPI(`/update-placeholder`, {method: "POST", body: JSON.stringify(params)})
+            return JSON.parse(await resp.text(), dateReviver) as ResponseType<typeof api_pptx_update_placeholder_updatePlaceholder>
         }
 
         /**
